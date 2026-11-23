@@ -13,7 +13,7 @@ export class RateLimitError extends Error {
 const PRESETS: Record<string, { baseUrl: string; model: string }> = {
   gemini: {
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-    model: "gemini-2.5-flash",
+    model: "gemini-3.8-flash",
   },
   groq: { baseUrl: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile" },
 };
