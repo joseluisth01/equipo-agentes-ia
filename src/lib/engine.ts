@@ -97,7 +97,7 @@ function deriveAgents(run: Run, tasks: Task[]): RunState["agents"] {
 
 /** Cerrojo optimista para que dos pestañas no ejecuten el mismo paso a la vez. */
 async function acquire(runId: string) {
-  const rows = await sql()`update runs set locked_until = now() + interval '150 seconds'
+  const rows = await sql()`update runs set locked_until = now() + interval '320 seconds'
     where id = ${runId} and (locked_until is null or locked_until < now()) returning id`;
   return rows.length > 0;
 }

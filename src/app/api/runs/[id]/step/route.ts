@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { step } from "@/lib/engine";
 
-// Un paso = una llamada a un agente. Cabe holgado en el límite de Vercel Hobby.
-export const maxDuration = 120;
+// Un paso = una llamada a un agente. 300 s es el máximo de Vercel Hobby (fluid compute).
+export const maxDuration = 300;
 
 const UUID = /^[0-9a-f-]{36}$/i;
 
