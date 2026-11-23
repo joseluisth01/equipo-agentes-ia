@@ -1,36 +1,63 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Equipo de agentes IA: Orquestador · Develop · Testing
 
-## Getting Started
+Tres agentes de IA que trabajan juntos sobre una web real:
 
-First, run the development server:
+1. **Orquestador**: recibe una petición («añade una página de contacto a esta web»), analiza la web actual, la divide en 2–5 tareas y define para cada una **comprobaciones automáticas** objetivas.
+2. **Develop**: implementa las tareas una a una y escribe los archivos (HTML/CSS) en la base de datos.
+3. **Testing**: ejecuta las comprobaciones de la tarea + un control global de enlaces rotos + una revisión de código con el LLM. Si algo falla, devuelve a Develop la lista concreta de fallos. El ciclo se repite hasta que todo pasa (máx. 3 intentos por tarea).
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+En pantalla se ve en todo momento qué hace cada agente (trabajando / esperando / terminado), el tablero de tareas con su estado, el detalle de cada comprobación (✔/✘), la actividad de los agentes y la web resultante en vista previa y en código.
+
+**Stack:** Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · Postgres (Neon o Supabase, plan gratuito) · Gemini 2.5 Flash o Llama 3.3 70B en Groq (planes gratuitos) · Vercel.
+
+## Arquitectura
+
+```
+Navegador ──POST /api/runs/:id/step──▶ engine.step()  ── ejecuta UN paso de UN agente
+    ▲                                       │
+    └──GET /api/runs/:id (polling 1,5 s)────┴──▶ Postgres: runs · tasks · files · events
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+- **Un paso por petición HTTP.** Cada llamada a `step()` ejecuta un solo agente y guarda el resultado. Ninguna función serverless se acerca al límite de tiempo de Vercel, el estado sobrevive a recargas y cualquier pestaña ve el progreso.
+- **Máquina de estados de la tarea:** `pending → developing → testing → done | changes_requested → developing … | failed`.
+- **Cerrojo optimista** en `runs.locked_until`, para que dos pestañas abiertas no ejecuten el mismo paso a la vez.
+- **Testing no depende solo del LLM**: las comprobaciones (`file_exists`, `valid_html`, `selector_exists`, `text_contains`, `link_to`) se ejecutan de verdad con un parser HTML. El LLM añade la revisión de código.
+- **Salida del LLM saneada**: solo se aceptan tipos de comprobación conocidos y rutas `.html/.css/.js` planas (no se puede escribir `../`).
+- **Límites del plan gratuito**: si el proveedor responde 429, el paso se revierte y la interfaz espera lo que indique `retry-after`.
+- **Modo demo (sin LLM)**: si no hay `LLM_API_KEY`, o si se marca en pantalla, los agentes usan respuestas guionizadas pero **el mismo motor y las mismas comprobaciones reales**. Develop falla a propósito en el primer intento de la tarea de navegación para que se vea el bucle Develop ⇄ Testing.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```
+src/
+  lib/engine.ts            máquina de estados y reparto entre agentes
+  lib/agents/orchestrator  prompt + planificación + resumen final
+  lib/agents/develop       prompt + implementación
+  lib/agents/testing       comprobaciones deterministas + revisión LLM
+  lib/agents/demo          respuestas guionizadas del modo demo
+  lib/checks.ts            ejecutor de comprobaciones y detector de enlaces rotos
+  lib/llm.ts               cliente compatible con OpenAI (Gemini / Groq)
+  lib/db.ts                Postgres + creación automática del esquema
+  components/RunView.tsx   panel en vivo: agentes, tablero, actividad, vista previa
+  proxy.ts                 acceso con usuario de prueba
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Puesta en marcha local
 
-## Learn More
+```bash
+cp .env.example .env.local   # rellena DATABASE_URL y, si quieres, LLM_API_KEY
+npm install
+npm run dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+Las tablas se crean solas en la primera petición (también están en `db/schema.sql`).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Despliegue en Vercel (todo gratis)
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. **Base de datos**: crea un proyecto en [Neon](https://neon.tech) (o Supabase) y copia la cadena de conexión *pooled*.
+2. **LLM**: crea una API key gratuita en [Google AI Studio](https://aistudio.google.com/apikey) (`LLM_PROVIDER=gemini`) o en [Groq](https://console.groq.com/keys) (`LLM_PROVIDER=groq`).
+3. Sube el repo a GitHub e impórtalo en Vercel.
+4. En *Settings → Environment Variables* añade `DATABASE_URL`, `LLM_PROVIDER`, `LLM_API_KEY`, `DEMO_USER`, `DEMO_PASSWORD` y `AUTH_SECRET`.
+5. Despliega. Ninguna clave está en el repositorio: `.env*` está en `.gitignore`.
 
-## Deploy on Vercel
+## Cómo se ha usado la IA para programarlo
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Ver [CLAUDE.md](CLAUDE.md): contexto del proyecto, convenciones y flujo de trabajo usado con Claude Code.
