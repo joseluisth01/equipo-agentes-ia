@@ -206,7 +206,7 @@ export async function step(runId: string): Promise<StepResult> {
   } catch (e) {
     if (revert) await revert().catch(() => {});
     if (e instanceof RateLimitError) {
-      await log(runId, "orchestrator", "info", `El proveedor LLM ha pedido esperar ${e.retryAfterSeconds}s (plan gratuito). Se reanuda solo.`);
+      await log(runId, "orchestrator", "info", `${e.message}. Se reanuda solo.`);
       return { ok: false, retryAfter: e.retryAfterSeconds, message: e.message };
     }
     const message = e instanceof Error ? e.message : String(e);

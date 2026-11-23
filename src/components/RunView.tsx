@@ -53,7 +53,7 @@ export function RunView({ id }: { id: string }) {
         if (res.busy) {
           await sleep(2000); // otra pestaña está ejecutando el paso
         } else if (res.retryAfter) {
-          setDriver({ mode: "waiting", message: `Plan gratuito del LLM: esperando ${res.retryAfter}s…` });
+          setDriver({ mode: "waiting", message: `Proveedor de IA limitado o saturado: reanudando en ${res.retryAfter}s…` });
           await sleep(res.retryAfter * 1000);
         } else {
           errors++;
