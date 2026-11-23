@@ -23,7 +23,7 @@ Navegador ──POST /api/runs/:id/step──▶ engine.step()  ── ejecuta U
 - **Cerrojo optimista** en `runs.locked_until`, para que dos pestañas abiertas no ejecuten el mismo paso a la vez.
 - **Testing no depende solo del LLM**: las comprobaciones (`file_exists`, `valid_html`, `selector_exists`, `text_contains`, `link_to`) se ejecutan de verdad con un parser HTML. El LLM añade la revisión de código.
 - **Salida del LLM saneada**: solo se aceptan tipos de comprobación conocidos y rutas `.html/.css/.js` planas (no se puede escribir `../`).
-- **Límites del plan gratuito**: si el proveedor responde 429, el paso se revierte y la interfaz espera lo que indique `retry-after`.
+- **Límites del plan gratuito**: cadena de modelos (`gemini-3.8-flash` → `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite`, configurable con `LLM_FALLBACK_MODELS`). Si un modelo está saturado (5xx), sin cuota (429), no disponible (404) o tarda más de 60 s, se pasa al siguiente; si fallan todos, el paso se revierte y la interfaz reanuda sola. La actividad muestra qué modelo respondió.
 - **Modo demo (sin LLM)**: si no hay `LLM_API_KEY`, o si se marca en pantalla, los agentes usan respuestas guionizadas pero **el mismo motor y las mismas comprobaciones reales**. Develop falla a propósito en el primer intento de la tarea de navegación para que se vea el bucle Develop ⇄ Testing.
 
 ```

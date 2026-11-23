@@ -10,7 +10,7 @@
  *                                       └─ todas cerradas ──Orquestador (resumen)──▶ completed
  */
 import { ensureSchema, sql } from "./db";
-import { llmAvailable, RateLimitError } from "./llm";
+import { lastModelUsed, llmAvailable, RateLimitError } from "./llm";
 import { planWithLLM, summarizeWithLLM, type Plan } from "./agents/orchestrator";
 import { developWithLLM, type DevResult } from "./agents/develop";
 import { buildReport, reviewWithLLM, runAutomatedChecks } from "./agents/testing";
@@ -127,7 +127,7 @@ export async function step(runId: string): Promise<StepResult> {
       if (demo) await pause();
       const files = await loadFiles(runId);
       const plan: Plan = demo ? demoPlan(run.request, files) : await planWithLLM(run.request, files);
-      await log(runId, "orchestrator", "result", plan.analysis || "Plan listo.", { tasks: plan.tasks.map((t) => t.title) });
+      await log(runId, "orchestrator", "result", (plan.analysis || "Plan listo.") + (demo ? "" : ` [${lastModelUsed}]`), { tasks: plan.tasks.map((t) => t.title), model: demo ? null : lastModelUsed });
       for (const [i, t] of plan.tasks.entries()) {
         await sql()`insert into tasks (run_id, position, title, description, checks)
           values (${runId}, ${i}, ${t.title}, ${t.description}, ${sql().json(t.checks as never)})`;
@@ -172,7 +172,7 @@ export async function step(runId: string): Promise<StepResult> {
       }
       await sql()`update tasks set status = 'testing', updated_at = now() where id = ${task.id}`;
       revert = null;
-      await log(runId, "develop", "handoff", `${dev.notes} → Archivos: ${dev.files.map((f) => f.path).join(", ")}. Paso a Testing.`, { files: dev.files.map((f) => f.path) }, task.id);
+      await log(runId, "develop", "handoff", `${dev.notes} → Archivos: ${dev.files.map((f) => f.path).join(", ")}. Paso a Testing.${demo ? "" : ` [${lastModelUsed}]`}`, { files: dev.files.map((f) => f.path), model: demo ? null : lastModelUsed }, task.id);
       return { ok: true, finished: false, agent: "develop" };
     }
 

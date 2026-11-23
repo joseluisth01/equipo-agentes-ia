@@ -12,7 +12,8 @@ export class RateLimitError extends Error {
 }
 
 const TRANSIENT = new Set([500, 502, 503, 504]);
-const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS) || 110_000;
+const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS) || 60_000;
+const DEFAULT_GEMINI_FALLBACKS = "gemini-3.5-flash-lite,gemini-3.1-flash-lite";
 
 const PRESETS: Record<string, { baseUrl: string; model: string }> = {
   gemini: {
@@ -42,61 +43,81 @@ export interface ChatMessage {
   content: string;
 }
 
+/** Modelos a probar en orden. Si uno está saturado o sin cuota, se pasa al siguiente. */
+export function modelChain() {
+  const cfg = llmConfig();
+  const fallback = (process.env.LLM_FALLBACK_MODELS ?? (cfg.provider === "gemini" ? DEFAULT_GEMINI_FALLBACKS : ""))
+    .split(",")
+    .map((m) => m.trim())
+    .filter(Boolean);
+  return [...new Set([cfg.model, ...fallback])];
+}
+
+/** Modelo que respondió la última llamada (para mostrarlo en la actividad). */
+export let lastModelUsed = "";
+
 /** Llama al modelo y devuelve el JSON que haya producido. */
 export async function chatJSON<T>(messages: ChatMessage[], opts: { maxTokens?: number } = {}): Promise<T> {
   const cfg = llmConfig();
   if (!cfg.apiKey) throw new Error("LLM_API_KEY no configurada");
 
-  // Reintentos dentro del mismo paso ante saturación temporal del proveedor (5xx).
-  let res: Response | null = null;
-  let useReasoning = cfg.provider === "gemini";
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      res = await fetch(`${cfg.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.apiKey}` },
-        body: JSON.stringify({
-          model: cfg.model,
-          messages,
-          temperature: 0.2,
-          max_tokens: opts.maxTokens ?? 8000,
-          response_format: { type: "json_object" },
-          // Modelos con razonamiento (Gemini 3.x): poco "pensamiento" = respuestas rápidas.
-          ...(useReasoning ? { reasoning_effort: process.env.LLM_REASONING || "low" } : {}),
-        }),
-        signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
-      });
-    } catch (e) {
-      if (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError")) {
-        throw new RateLimitError(5, `El modelo tardó más de ${LLM_TIMEOUT_MS / 1000}s en responder`);
+  const problems: string[] = [];
+  let minRetry = 15;
+  for (const model of modelChain()) {
+    let useReasoning = cfg.provider === "gemini";
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let res: Response;
+      try {
+        res = await fetch(`${cfg.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.apiKey}` },
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature: 0.2,
+            max_tokens: opts.maxTokens ?? 8000,
+            response_format: { type: "json_object" },
+            // Modelos con razonamiento (Gemini 3.x): poco "pensamiento" = respuestas rápidas.
+            ...(useReasoning ? { reasoning_effort: process.env.LLM_REASONING || "low" } : {}),
+          }),
+          signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
+        });
+      } catch (e) {
+        if (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError")) {
+          problems.push(`${model}: sin respuesta en ${LLM_TIMEOUT_MS / 1000}s`);
+          break; // siguiente modelo
+        }
+        throw e;
       }
-      throw e;
-    }
-    // Si el modelo no acepta reasoning_effort, se repite sin él.
-    if (res.status === 400 && useReasoning && /reasoning/i.test(await res.clone().text())) {
-      useReasoning = false;
-      attempt--;
-      continue;
-    }
-    if (!TRANSIENT.has(res.status)) break;
-    if (attempt < 2) await new Promise((r) => setTimeout(r, 2500 * (attempt + 1)));
-  }
-  if (!res) throw new Error("Sin respuesta del proveedor LLM");
 
-  if (res.status === 429) {
-    const header = Number(res.headers.get("retry-after"));
-    throw new RateLimitError(Number.isFinite(header) && header > 0 ? Math.ceil(header) : 20);
-  }
-  // Sigue saturado tras los reintentos: el cliente espera y reanuda solo, sin contarlo como error.
-  if (TRANSIENT.has(res.status)) throw new RateLimitError(15, "El modelo está saturado ahora mismo (error " + res.status + ")");
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`LLM ${res.status}: ${body.slice(0, 300)}`);
-  }
+      if (res.ok) {
+        const json = await res.json();
+        const content: string = json?.choices?.[0]?.message?.content ?? "";
+        lastModelUsed = model;
+        return parseJSON<T>(content);
+      }
 
-  const json = await res.json();
-  const content: string = json?.choices?.[0]?.message?.content ?? "";
-  return parseJSON<T>(content);
+      const body = await res.text();
+      // Si el modelo no acepta reasoning_effort, se repite sin él.
+      if (res.status === 400 && useReasoning && /reasoning|thinking/i.test(body)) {
+        useReasoning = false;
+        continue;
+      }
+      if (res.status === 429) {
+        const header = Number(res.headers.get("retry-after"));
+        if (Number.isFinite(header) && header > 0) minRetry = Math.min(minRetry, Math.ceil(header));
+        problems.push(`${model}: sin cuota (429)`);
+        break;
+      }
+      if (res.status === 404 || TRANSIENT.has(res.status)) {
+        problems.push(`${model}: ${res.status === 404 ? "no disponible" : "saturado"} (${res.status})`);
+        break;
+      }
+      throw new Error(`LLM ${res.status} (${model}): ${body.slice(0, 300)}`);
+    }
+  }
+  // Ningún modelo ha respondido: el cliente espera y reanuda solo, sin contarlo como error.
+  throw new RateLimitError(minRetry, `Modelos de IA saturados o sin cuota → ${problems.join(" · ")}`);
 }
 
 /** Tolera bloques ```json y texto alrededor del objeto. */
